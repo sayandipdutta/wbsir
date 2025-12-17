@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 import logging
@@ -13,10 +14,8 @@ def init_db():
     if not INIT_SCRIPT_PATH.exists():
         raise FileNotFoundError(f"{INIT_SCRIPT_PATH} not found")
     logger.info(f"Initializing database at {DB_PATH}")
-    if DB_PATH.exists():
-        logger.warning(f"Database {DB_PATH} already exists. Overwriting...")
     DB_PATH.unlink(missing_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         _ = conn.executescript(INIT_SCRIPT_PATH.read_text())
     logger.info("Database initialized.")
 

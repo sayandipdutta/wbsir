@@ -51,7 +51,7 @@ def resolve_multi_col(df: pd.DataFrame, resolved_cols: list[str]) -> pd.DataFram
     return df.apply(
         lambda row: pd.Series(list(filter(None, chain(*row))), index=resolved_cols),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
         axis="columns",
-    )
+    )  # ty:ignore[invalid-return-type]
 
 
 async def get_districts_table(url: str):
@@ -64,17 +64,19 @@ async def get_districts_table(url: str):
 async def get_assembly_constituencies_table(url: str, target_district_index: int):
     assert target_district_index > 0
     url = f"{url}/Roll_ac/{target_district_index}"
-    html = StringIO(await get_url(url))
+    html = await get_url(url)
     assembly_constituencies_table = get_html_table(html)
     return resolve_multi_col(
         assembly_constituencies_table, ["AC_no.", "AC_name", "path"]
     )
 
 
-async def get_polling_stations_table(url: str, target_assembly_constituency_index: int):
+async def get_polling_stations_table(
+    url: str, target_assembly_constituency_index: int
+) -> pd.DataFrame:
     assert target_assembly_constituency_index > 0
     url = f"{url}/Roll_ps/{target_assembly_constituency_index}"
-    html = StringIO(await get_url(url))
+    html = await get_url(url)
     polling_stations_table = get_html_table(html, extract_links=None)
     polling_stations_table["path"] = (
         polling_stations_table["Ps No."]
@@ -104,15 +106,18 @@ async def download_all_polling_station_pdfs(
     download_url_prefix = f"{base_url}/RollPDF/GetDraft?acId={ac_id}&key="
     ps_table["url"] = ps_table["path"].apply(base64_str).radd(download_url_prefix)  # pyright: ignore[reportUnknownMemberType]
     async with asyncio.TaskGroup() as tg:
-        for _, row in ps_table.iterrows():
-            save_path = save_dir / row["path"]
-            tg.create_task(download_file(row["url"], save_path))
+        _tasks = list(
+            map(
+                tg.create_task,
+                map(download_file, ps_table.url, ps_table.path.rdiv(save_dir)),
+            )
+        )
 
 
 def main():
     base_url = "https://ceowestbengal.wb.gov.in"
-    Path("./data").mkdir(parents=True, exist_ok=True)
-    _ = asyncio.run(download_all_polling_station_pdfs(base_url, 1, Path("./data")))
+    (path := Path("./data")).mkdir(parents=True, exist_ok=True)
+    _ = asyncio.run(download_all_polling_station_pdfs(base_url, 1, path))
 
 
 if __name__ == "__main__":
