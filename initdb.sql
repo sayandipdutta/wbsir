@@ -11,9 +11,9 @@ CREATE TABLE IF NOT EXISTS assemblies (
 );
 
 CREATE TABLE IF NOT EXISTS polling_stations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    serial INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     location TEXT NULL,
-    assembly_serial INTEGER NOT NULL,
-    FOREIGN KEY (assembly_serial) REFERENCES assemblies (serial)
+    assembly_id INTEGER NOT NULL,
+    FOREIGN KEY (assembly_id) REFERENCES assemblies (serial)
 );

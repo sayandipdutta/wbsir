@@ -1,3 +1,6 @@
+from tqdm.asyncio import tqdm as atqdm
+# from tqdm import tqdm
+import argparse
 import asyncio
 import logging
 import sqlite3
@@ -24,7 +27,8 @@ async def main():
     # init_db()
 
     districts_df = (
-        districts_df.rename(columns={"district": "name"})
+        districts_df
+        .rename(columns={"district": "name"})
         .assign(serial=lambda df: range(1, len(df) + 1))
         .drop(columns=["path"])
     )
@@ -36,12 +40,16 @@ async def main():
 
     logging.info("Fetching assemblies...")
     try:
+        futures = [
+            get_assembly_constituencies_table(BASE_URL, district_id)
+            for district_id in districts_df.serial
+        ]
+        # tables = [await future for future in tqdm(futures)]
+        tables = await atqdm.gather(*futures)
         all_assemblies = pd.concat(
             [
-                (await get_assembly_constituencies_table(BASE_URL, district_id)).assign(
-                    district_id=district_id
-                )
-                for district_id in districts_df["serial"]
+                table.assign(district_id=district_id)
+                for table, district_id in zip(tables, districts_df.serial)
             ],
             ignore_index=True,
         ).rename(columns={"AC_no.": "serial", "AC_name": "name"})[
@@ -57,20 +65,24 @@ async def main():
 
     logging.info("Fetching polling stations...")
     try:
+        assembly_ids = all_assemblies.serial.astype(int)
+        futures = [get_polling_stations_table(BASE_URL, assembly_id) for assembly_id in assembly_ids]
+        # tables = [await fut for fut in tqdm(futures)]
+        tables = await atqdm.gather(*futures)
+        print(tables[0].columns)
         all_polling_stations = pd.concat(
             [
-                (await get_polling_stations_table(BASE_URL, assembly_id)).assign(
-                    assembly_id=assembly_id
-                )
-                for assembly_id in all_assemblies["serial"]
+                result.assign(assembly_id=assembly_id)
+                for result, assembly_id in zip(tables, assembly_ids)
             ],
             ignore_index=True,
-        ).rename(columns={"Ps No.": "serial", "Ps Name": "name"})[
-            ["serial", "name", "assembly_id"]
+        ).rename(columns={"Ps No.": "serial", "Polling Station Name": "name", "path": "location"})[
+            ["serial", "name", "location", "assembly_id"]
         ]
         logging.info(f"Found {len(all_polling_stations)} polling stations.")
     except Exception as e:
         logging.error(f"Error fetching polling stations: {e}")
+        raise
         return
     with sqlite3.connect("wbsir.db") as conn:
         _ = all_polling_stations.to_sql(
@@ -80,4 +92,16 @@ async def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-l",
+        "--loglevel",
+        default=logging.WARNING,
+        choices=logging.getLevelNamesMapping().keys(),
+        help="Set log level",
+    )
+
+    args = parser.parse_args()
+    logging.basicConfig(level=args.loglevel)
+    logger = logging.getLogger(__name__)
     asyncio.run(main())

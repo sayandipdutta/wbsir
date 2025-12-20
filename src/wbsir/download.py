@@ -1,3 +1,5 @@
+from asyncio.exceptions import CancelledError
+import sqlite3
 import asyncio
 import base64
 import logging
@@ -7,8 +9,9 @@ from io import StringIO
 from itertools import chain
 from typing import Literal
 
+from tqdm.asyncio import tqdm as atqdm
 import pandas as pd
-from aiohttp import ClientSession, TCPConnector
+from aiohttp import ClientSession, TCPConnector, ConnectionTimeoutError, ClientTimeout
 
 type LinkLocation = Literal["body", "all", "footer"]
 
@@ -17,6 +20,19 @@ context.options |= ssl.OP_LEGACY_SERVER_CONNECT
 
 
 def base64_str(s: str) -> str:
+    """
+    Encode a string in base64, and return encoded string
+
+    Parameters
+    ----------
+    s: str
+        string to encode
+
+    Returns
+    -------
+    str
+        return encoded string
+    """
     return base64.b64encode(s.encode()).decode()
 
 
@@ -61,7 +77,9 @@ async def get_districts_table(url: str):
     return resolve_multi_col(districts_table, ["district", "path"])
 
 
-async def get_assembly_constituencies_table(url: str, target_district_index: int):
+async def get_assembly_constituencies_table(
+    url: str, target_district_index: int
+) -> pd.DataFrame:
     assert target_district_index > 0
     url = f"{url}/Roll_ac/{target_district_index}"
     html = await get_url(url)
@@ -88,36 +106,55 @@ async def get_polling_stations_table(
     return polling_stations_table
 
 
-async def download_file(url: str, save_path: Path):
-    assert save_path.parent.exists(), f"Directory {save_path.parent} does not exist"
-    async with (
-        ClientSession(connector=TCPConnector(ssl=context)) as session,
-        session.get(url) as response,
-    ):
-        _ = await asyncio.to_thread(save_path.write_bytes, await response.read())
-
-
-async def download_all_polling_station_pdfs(
-    base_url: str,
-    ac_id: int,
-    save_dir: Path,
+async def download_file(
+    url: str,
+    save_path: Path,
+    timeout_sec: int = 10,
+    max_retries: int = 5,
 ):
-    ps_table = await get_polling_stations_table(base_url, ac_id)
-    download_url_prefix = f"{base_url}/RollPDF/GetDraft?acId={ac_id}&key="
-    ps_table["url"] = ps_table["path"].apply(base64_str).radd(download_url_prefix)  # pyright: ignore[reportUnknownMemberType]
-    async with asyncio.TaskGroup() as tg:
-        _tasks = list(
-            map(
-                tg.create_task,
-                map(download_file, ps_table.url, ps_table.path.rdiv(save_dir)),
-            )
+    assert save_path.parent.exists(), f"Directory {save_path.parent} does not exist"
+    try:
+        async with (
+            ClientSession(
+                connector=TCPConnector(ssl=context, limit=3600, keepalive_timeout=None),
+                timeout=ClientTimeout(3600),
+            ) as session,
+            session.get(url) as response,
+        ):
+            # _ = await asyncio.to_thread(save_path.write_bytes, await response.read())
+            _ = save_path.write_bytes(await response.read())
+    except* ConnectionTimeoutError, CancelledError:
+        if max_retries == 0:
+            raise
+        await download_file(url, save_path, timeout_sec,  max_retries - 1)
+
+
+async def download_all_polling_station_pdfs(base_url: str, save_path: Path):
+    assert isinstance(save_path, Path), "`save_path` must be a pathlib.Path instance"
+    with sqlite3.connect("wbsir.db") as conn:
+        df = pd.read_sql_query(
+            "SELECT location, assembly_id FROM polling_stations", conn
         )
+    if df.empty:
+        return
+    urls: pd.Series[str] = (
+        f"{base_url}/RollPDF/GetDraft?acId="
+        + df.assembly_id.astype(str)
+        + "&key="
+        + df.location.apply(base64_str)
+    )
+    pd.set_option("display.max_colwidth", 150)
+    save_paths: pd.Series[Path] = df.location.rdiv(save_path)
+    save_path.mkdir(exist_ok=True)
+    futures = list(map(download_file, urls, save_paths))
+    async for fut in atqdm(asyncio.as_completed(futures), total=len(futures)):
+        await fut
 
 
 def main():
     base_url = "https://ceowestbengal.wb.gov.in"
     (path := Path("./data")).mkdir(parents=True, exist_ok=True)
-    _ = asyncio.run(download_all_polling_station_pdfs(base_url, 1, path))
+    _ = asyncio.run(download_all_polling_station_pdfs(base_url, path))
 
 
 if __name__ == "__main__":

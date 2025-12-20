@@ -1,3 +1,4 @@
+import argparse
 from contextlib import closing
 import sqlite3
 from pathlib import Path
@@ -21,4 +22,11 @@ def init_db():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-l", "--loglevel", default=logging.WARNING,
+           choices=logging.getLevelNamesMapping().keys(), help="Set log level")
+
+    args = parser.parse_args()
+    logging.basicConfig(level=args.loglevel.upper())
+    logger = logging.getLogger(__name__)
     init_db()
