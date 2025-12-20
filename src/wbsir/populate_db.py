@@ -85,7 +85,6 @@ async def main():
         logging.info(f"Found {len(all_polling_stations)} polling stations.")
     except Exception as e:
         logging.error(f"Error fetching polling stations: {e}")
-        raise
         return
     with conn:
         _ = all_polling_stations.to_sql(
