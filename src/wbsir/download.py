@@ -120,7 +120,6 @@ async def download_file(
     max_retries: int = 5,
     overwrite: bool = False,
 ):
-    # TODO(sayandipdutta): Check if timeout_sec is needed
     assert save_path.parent.exists(), f"Directory {save_path.parent} does not exist"
     assert not save_path.is_dir(), f"{save_path} is a directory"
     if not overwrite and save_path.is_file():
