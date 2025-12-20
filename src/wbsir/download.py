@@ -1,17 +1,24 @@
-from asyncio.exceptions import CancelledError
-import sqlite3
 import asyncio
 import base64
 import logging
-from pathlib import Path
+import sqlite3
 import ssl
+from asyncio.exceptions import CancelledError
 from io import StringIO
 from itertools import chain
+from pathlib import Path
 from typing import Literal
 
-from tqdm.asyncio import tqdm as atqdm
 import pandas as pd
-from aiohttp import ClientSession, TCPConnector, ConnectionTimeoutError, ClientTimeout
+from aiohttp import (
+    ClientConnectionError,
+    ClientSession,
+    ConnectionTimeoutError,
+    TCPConnector,
+)
+from tqdm.asyncio import tqdm as atqdm
+
+from wbsir.config import BASE_URL, DATA_DIR, DATABASE_PATH
 
 type LinkLocation = Literal["body", "all", "footer"]
 
@@ -109,53 +116,53 @@ async def get_polling_stations_table(
 async def download_file(
     url: str,
     save_path: Path,
-    timeout_sec: int = 10,
+    *,
     max_retries: int = 5,
+    overwrite: bool = False,
 ):
+    # TODO(sayandipdutta): Check if timeout_sec is needed
     assert save_path.parent.exists(), f"Directory {save_path.parent} does not exist"
+    assert not save_path.is_dir(), f"{save_path} is a directory"
+    if not overwrite and save_path.is_file():
+        return
     try:
         async with (
-            ClientSession(
-                connector=TCPConnector(ssl=context, limit=3600, keepalive_timeout=None),
-                timeout=ClientTimeout(3600),
-            ) as session,
+            ClientSession(connector=TCPConnector(ssl=context)) as session,
             session.get(url) as response,
         ):
             # _ = await asyncio.to_thread(save_path.write_bytes, await response.read())
             _ = save_path.write_bytes(await response.read())
-    except* ConnectionTimeoutError, CancelledError:
+    except* ConnectionTimeoutError, CancelledError, ClientConnectionError:
+        # TODO(sayandipdutta): Log
         if max_retries == 0:
             raise
-        await download_file(url, save_path, timeout_sec,  max_retries - 1)
+        await download_file(
+            url,
+            save_path,
+            max_retries=max_retries - 1,
+            overwrite=overwrite,
+        )
 
 
-async def download_all_polling_station_pdfs(base_url: str, save_path: Path):
-    assert isinstance(save_path, Path), "`save_path` must be a pathlib.Path instance"
-    with sqlite3.connect("wbsir.db") as conn:
+async def main():
+    with sqlite3.connect(DATABASE_PATH) as conn:
         df = pd.read_sql_query(
             "SELECT location, assembly_id FROM polling_stations", conn
         )
     if df.empty:
         return
     urls: pd.Series[str] = (
-        f"{base_url}/RollPDF/GetDraft?acId="
+        f"{BASE_URL}/RollPDF/GetDraft?acId="
         + df.assembly_id.astype(str)
         + "&key="
         + df.location.apply(base64_str)
     )
-    pd.set_option("display.max_colwidth", 150)
-    save_paths: pd.Series[Path] = df.location.rdiv(save_path)
-    save_path.mkdir(exist_ok=True)
+    save_paths: pd.Series[Path] = df.location.rdiv(DATA_DIR)
+    DATA_DIR.mkdir(exist_ok=True)
     futures = list(map(download_file, urls, save_paths))
     async for fut in atqdm(asyncio.as_completed(futures), total=len(futures)):
         await fut
 
 
-def main():
-    base_url = "https://ceowestbengal.wb.gov.in"
-    (path := Path("./data")).mkdir(parents=True, exist_ok=True)
-    _ = asyncio.run(download_all_polling_station_pdfs(base_url, path))
-
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
