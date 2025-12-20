@@ -1,5 +1,4 @@
 from tqdm.asyncio import tqdm as atqdm
-# from tqdm import tqdm
 import argparse
 import asyncio
 import logging
@@ -23,8 +22,6 @@ async def main():
         return
 
     logging.info(f"Found {len(districts_df)} districts.")
-
-    # init_db()
 
     districts_df = (
         districts_df
